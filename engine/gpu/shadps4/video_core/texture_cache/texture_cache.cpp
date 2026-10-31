@@ -688,7 +688,7 @@ const UiPack& Pack() {
             auto& known = p.sizes[u64(w) << 32 | h];
             if (std::find(known.begin(), known.end(), size) == known.end()) known.push_back(size);
         }
-        std::printf("UI textures: %zu 4x replacements found in %s\n", p.keys.size(), dir);
+        std::printf("UI textures: %zu replacements found in %s\n", p.keys.size(), dir);
         return p;
     }();
     return pack;

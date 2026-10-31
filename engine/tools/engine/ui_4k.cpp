@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cmath>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include "engine/hud_clean.h"
@@ -167,6 +170,153 @@ void Halve(Bytes& pixels, std::uint32_t& w, std::uint32_t& h) {
     h = nh;
 }
 
+const std::array<float, 256>& Linear() {
+    static const std::array<float, 256> table = [] {
+        std::array<float, 256> t{};
+        for (int i = 0; i < 256; ++i) {
+            const float c = float(i) / 255.0f;
+            t[std::size_t(i)] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+        }
+        return t;
+    }();
+    return table;
+}
+
+std::uint8_t Srgb(float linear) {
+    const float c = std::clamp(linear, 0.0f, 1.0f);
+    const float s = c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+    return std::uint8_t(std::lround(s * 255.0f));
+}
+
+// The colour under fully transparent pixels taken from their visible neighbours, grown a pixel a
+// pass: whatever the art left there (often black) otherwise upscales into dark halos at soft alpha
+// edges.
+void Bleed(Bytes& rgba, int width, int height) {
+    std::vector<std::uint8_t> known(std::size_t(width) * height);
+    for (std::size_t i = 0; i < known.size(); ++i) known[i] = rgba[i * 4 + 3] > 0;
+    for (int pass = 0; pass < 12; ++pass) {
+        std::vector<std::uint8_t> grown = known;
+        bool any = false;
+        for (int y = 0; y < height; ++y)
+            for (int x = 0; x < width; ++x) {
+                const std::size_t i = std::size_t(y) * width + x;
+                if (known[i]) continue;
+                int sum[3] = {}, count = 0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int sx = x + dx, sy = y + dy;
+                        if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
+                        const std::size_t j = std::size_t(sy) * width + sx;
+                        if (!known[j]) continue;
+                        for (int c = 0; c < 3; ++c) sum[c] += rgba[j * 4 + c];
+                        ++count;
+                    }
+                if (!count) continue;
+                for (int c = 0; c < 3; ++c) rgba[i * 4 + c] = std::uint8_t((sum[c] + count / 2) / count);
+                grown[i] = 1;
+                any = true;
+            }
+        known = std::move(grown);
+        if (!any) break;
+    }
+}
+
+// One separable pass of `kernel` (taps around each output pixel's centre in the source) over float
+// RGBA, along x when `horizontal`, on up to 8 threads.
+std::vector<float> Pass(const std::vector<float>& src, int width, int height, int out_size, bool horizontal,
+                        const std::function<float(float)>& kernel, float support) {
+    const int out_w = horizontal ? out_size : width, out_h = horizontal ? height : out_size;
+    const int in_size = horizontal ? width : height;
+    std::vector<std::vector<std::pair<int, float>>> taps(static_cast<std::size_t>(out_size));
+    for (int o = 0; o < out_size; ++o) {
+        const float centre = (float(o) + 0.5f) * float(in_size) / float(out_size) - 0.5f;
+        const int first = int(std::floor(centre - support)), last = int(std::ceil(centre + support));
+        float total = 0.0f;
+        for (int s = first; s <= last; ++s) {
+            const float w = kernel(float(s) - centre);
+            if (w == 0.0f) continue;
+            taps[std::size_t(o)].emplace_back(std::clamp(s, 0, in_size - 1), w);
+            total += w;
+        }
+        for (auto& tap : taps[std::size_t(o)]) tap.second /= total;
+    }
+    std::vector<float> out(std::size_t(out_w) * out_h * 4);
+    const auto one = [&](int o, int l) {
+        float acc[4] = {};
+        for (const auto& [s, w] : taps[std::size_t(o)]) {
+            const std::size_t at = horizontal ? (std::size_t(l) * width + s) * 4 : (std::size_t(s) * width + l) * 4;
+            for (int c = 0; c < 4; ++c) acc[c] += src[at + c] * w;
+        }
+        const std::size_t to = horizontal ? (std::size_t(l) * out_w + o) * 4 : (std::size_t(o) * out_w + l) * 4;
+        for (int c = 0; c < 4; ++c) out[to + c] = acc[c];
+    };
+    const int rows = horizontal ? height : out_size, across = horizontal ? out_size : width;
+    const auto band = [&](int first, int step) {
+        for (int r = first; r < rows; r += step)
+            for (int c = 0; c < across; ++c) horizontal ? one(c, r) : one(r, c);
+    };
+    const unsigned n = std::max(1u, std::min({8u, std::thread::hardware_concurrency(), unsigned(rows)}));
+    std::vector<std::thread> pool;
+    for (unsigned i = 1; i < n; ++i) pool.emplace_back(band, int(i), int(n));
+    band(0, int(n));
+    for (auto& t : pool) t.join();
+    return out;
+}
+
+// The model's 4x made the pack's 2x, the recipe picked by eye against the alternatives (x4plus,
+// Siax, Superscale and Nomos8kSC on the game's own art): 2x2 boxes in linear light (alpha
+// weighted), the finest detail turned down 35% (the model over-sharpens the smallest scale), then
+// 20% of a plain Lanczos resize of the original mixed in, which keeps the original's look and
+// colour. A conservative look, a matter of taste.
+Bytes Finish(const Bytes& big, std::uint32_t& w, std::uint32_t& h, const Bytes& original, int original_w, int original_h) {
+    constexpr float kFineDetailCut = 0.35f, kPlainShare = 0.20f;
+    const auto& linear = Linear();
+    const int width = original_w * 2, height = original_h * 2, big_w = int(w);
+    Bytes half(std::size_t(width) * height * 4);
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            float sum[4] = {}, plain[3] = {};
+            for (int dy = 0; dy < 2; ++dy)
+                for (int dx = 0; dx < 2; ++dx) {
+                    const std::uint8_t* p = &big[(std::size_t(y * 2 + dy) * big_w + x * 2 + dx) * 4];
+                    const float a = float(p[3]) / 255.0f;
+                    for (int c = 0; c < 3; ++c) {
+                        sum[c] += linear[p[c]] * a;
+                        plain[c] += linear[p[c]];
+                    }
+                    sum[3] += a;
+                }
+            std::uint8_t* q = &half[(std::size_t(y) * width + x) * 4];
+            // Fully transparent: the plain average, so filtering at the art's edge blends towards
+            // a colour that belongs to it.
+            for (int c = 0; c < 3; ++c) q[c] = Srgb(sum[3] > 0.0f ? sum[c] / sum[3] : plain[c] / 4.0f);
+            q[3] = std::uint8_t(std::lround(sum[3] / 4.0f * 255.0f));
+        }
+    const std::vector<float> base(half.begin(), half.end());
+    // The finest band: what a Gaussian of 0.9 output pixels removes.
+    const float sigma = 0.9f;
+    const auto gauss = [sigma](float x) { return std::exp(-x * x / (2.0f * sigma * sigma)); };
+    const std::vector<float> soft =
+        Pass(Pass(base, width, height, width, true, gauss, 3.0f * sigma), width, height, height, false, gauss, 3.0f * sigma);
+    const auto lanczos = [](float x) {
+        x = std::fabs(x);
+        if (x < 1e-6f) return 1.0f;
+        if (x >= 3.0f) return 0.0f;
+        const float pi = 3.14159265f;
+        return 3.0f * std::sin(pi * x) * std::sin(pi * x / 3.0f) / (pi * pi * x * x);
+    };
+    const std::vector<float> plain =
+        Pass(Pass(std::vector<float>(original.begin(), original.end()), original_w, original_h, width, true, lanczos, 3.0f),
+             width, original_h, height, false, lanczos, 3.0f);
+    for (std::size_t i = 0; i < half.size(); ++i) {
+        const float detail = base[i] - kFineDetailCut * (base[i] - soft[i]);
+        half[i] = std::uint8_t(std::clamp(std::lround((1.0f - kPlainShare) * detail + kPlainShare * plain[i]), 0L, 255L));
+    }
+    w = std::uint32_t(width);
+    h = std::uint32_t(height);
+    return half;
+}
+
 std::uint32_t Rgb565(std::uint16_t c) {
     const std::uint32_t r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
     return (r * 255 / 31) | (g * 255 / 63) << 8 | (b * 255 / 31) << 16 | 0xff000000u;
@@ -237,14 +387,18 @@ void RunWorkers(std::size_t count, const Work& work) {
     for (std::thread& thread : pool) thread.join();
 }
 
-int Export(const fs::path& menu, const fs::path& out) {
+// `part`: "art" (every sheet but the item pictures), "pictures" (menu_knowledge_*), or empty for all.
+int Export(const fs::path& menu, const fs::path& out, const std::string& part) {
     std::error_code error;
     fs::create_directories(out, error);
     std::vector<fs::path> files;
     for (const auto& entry : fs::recursive_directory_iterator(menu, error)) {
         if (!entry.is_regular_file()) continue;
         const std::string file = entry.path().filename().string();
-        if (file.ends_with(".tpf.dcx") || file.ends_with(".tpf")) files.push_back(entry.path());
+        if (!file.ends_with(".tpf.dcx") && !file.ends_with(".tpf")) continue;
+        const bool picture = file.starts_with("menu_knowledge");
+        if ((part == "art" && picture) || (part == "pictures" && !picture)) continue;
+        files.push_back(entry.path());
     }
     std::mutex seen_mutex;
     std::set<std::string> seen;
@@ -278,6 +432,10 @@ int Export(const fs::path& menu, const fs::path& out) {
                 if (fs::exists(png, file_error)) ++total;
                 continue;
             }
+            Bytes bytes(pixels.size() * 4);
+            std::memcpy(bytes.data(), pixels.data(), bytes.size());
+            Bleed(bytes, width, height);
+            std::memcpy(pixels.data(), bytes.data(), bytes.size());
             if (!WritePng(png, width, height, pixels)) {
                 std::fprintf(stderr, "could not write %s\n", png.string().c_str());
                 failed = true;
@@ -335,7 +493,9 @@ bool PackHud(const fs::path& out) {
     return true;
 }
 
-int Pack(const fs::path& in, const fs::path& out) {
+// `originals`: the exported PNGs the upscaled ones were made from; given, the model's 4x is
+// finished at 2x (Finish).
+int Pack(const fs::path& in, const fs::path& out, const fs::path& originals) {
     std::error_code error;
     fs::create_directories(out, error);
     std::vector<fs::path> pngs;
@@ -356,6 +516,16 @@ int Pack(const fs::path& in, const fs::path& out) {
                 std::fprintf(stderr, "could not read %s\n", png.string().c_str());
                 ++failed;
                 return;
+            }
+            Bytes original;
+            std::uint32_t ow = 0, oh = 0;
+            if (!originals.empty()) {
+                if (!ReadPng(originals / png.filename(), original, ow, oh) || w != ow * 4 || h != oh * 4) {
+                    std::fprintf(stderr, "no 4x original for %s\n", png.string().c_str());
+                    ++failed;
+                    return;
+                }
+                pixels = Finish(pixels, w, h, original, int(ow), int(oh));
             }
             while (w > kLargestSide || h > kLargestSide) Halve(pixels, w, h);
             if (!WriteBbui(target, pixels, w, h)) {
@@ -385,9 +555,11 @@ int main(int argc, char** argv) {
 #else
     for (int i = 0; i < argc; ++i) args.emplace_back(argv[i]);
 #endif
-    if (args.size() == 4 && argc == 4 && std::strcmp(argv[1], "export") == 0) return Export(args[2], args[3]);
-    if (args.size() == 4 && argc == 4 && std::strcmp(argv[1], "pack") == 0) return Pack(args[2], args[3]);
-    std::fprintf(stderr, "usage: bb-ui-4k export <game menu folder> <png folder>\n"
-                         "       bb-ui-4k pack <upscaled png folder> <ui-4k folder>\n");
+    if ((argc == 4 || argc == 5) && args.size() == std::size_t(argc) && std::strcmp(argv[1], "export") == 0)
+        return Export(args[2], args[3], argc == 5 ? argv[4] : "");
+    if ((argc == 4 || argc == 5) && args.size() == std::size_t(argc) && std::strcmp(argv[1], "pack") == 0)
+        return Pack(args[2], args[3], argc == 5 ? args[4] : fs::path());
+    std::fprintf(stderr, "usage: bb-ui-4k export <game menu folder> <png folder> [art|pictures]\n"
+                         "       bb-ui-4k pack <upscaled png folder> <ui-4k folder> [<exported png folder>]\n");
     return 2;
 }

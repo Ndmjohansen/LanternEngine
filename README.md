@@ -40,7 +40,7 @@ Seamless co-op runs on a server in Frankfurt, sponsored by [1337 Hosting](https:
 | XeSS Super Resolution | [Intel XeSS SDK 3.0.2](https://github.com/intel/xess), Intel's `libxess.dll` (downloaded by `engine/tools/fetch_xess.sh`) |
 | Sound | [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9) |
 | In-game menu | [Dear ImGui](https://github.com/ocornut/imgui) |
-| 4K menus | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) with [ncnn](https://github.com/Tencent/ncnn), downloaded by the launcher and run on the player's own game files |
+| HD menus | [4x-NMKD-Siax](https://openmodeldb.info/models/4x-NMKD-Siax-CX) by NMKD through [Real-ESRGAN ncnn Vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) with [ncnn](https://github.com/Tencent/ncnn), downloaded by the launcher and run on the player's own game files |
 | Controller mappings | [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB) |
 | UI library | [WPF-UI](https://github.com/lepoco/wpfui) |
 

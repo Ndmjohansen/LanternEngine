@@ -98,7 +98,7 @@ fonts and Lantern Menu SC (a Noto Sans SC subset, SIL OFL 1.1). The built-in gam
 (`patches/Bloodborne.xml`) are Lantern Engine's own, built from the eboot by `tools/re/game_patches.py`.
 Renderer fixes from AwesomeObserver's and deadinside28's bloodborne_pc forks and 0xCydral's FSR 4
 Vulkan path keep their GPL-2.0-or-later notices. AMD's FSR 4 DLLs and NVIDIA's DLSS files are not
-distributed here.
+distributed here, nor is the HD menus' upscaler (`licenses/REAL-ESRGAN.txt`, `licenses/4X-NMKD-SIAX.txt`).
 
 fromsoftserve contributed the optional lighting effects (GTAO, indirect lighting, contact shadows,
 PCSS, improved reflections, POM cavity, volumetric sunlight and lamp fog, point light shadows, shadow

@@ -1,0 +1,21 @@
+4x-NMKD-Siax (CX, 200k) by NMKD
+https://openmodeldb.info/models/4x-NMKD-Siax-CX
+ncnn conversion: https://github.com/upscayl/custom-models (models/4x_NMKD-Siax_200k.param, .bin)
+
+Not shipped with Lantern Engine. The launcher downloads the ncnn conversion (checked by SHA-256)
+when a player builds the HD menus, and runs it through realesrgan-ncnn-vulkan
+(licenses/REAL-ESRGAN.txt) on that player's own game files.
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+                    Version 2, December 2004
+
+ Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>
+
+ Everyone is permitted to copy and distribute verbatim or modified
+ copies of this license document, and changing it is allowed as long
+ as the name is changed.
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+  0. You just DO WHAT THE FUCK YOU WANT TO.

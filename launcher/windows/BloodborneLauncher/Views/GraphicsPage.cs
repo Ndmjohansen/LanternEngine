@@ -98,22 +98,27 @@ namespace BloodborneLauncher.Views
             Body.Children.Add(picture);
 
             Group(L.T("Menus"));
-            _ui4k = ToggleRow(SymbolRegular.ZoomIn24, L.T("4K menus"),
-                L.T("Menus, icons and item pictures upscaled 4x on your PC from your own game files. Nothing is downloaded but the upscaler"),
+            _ui4k = ToggleRow(SymbolRegular.ZoomIn24, L.T("HD menus"),
+                L.T("Menus, icons and item pictures made sharper on your PC from your own game files. A conservative look that fixes the pixelated art without oversharpening it. Nothing is downloaded but the upscaler"),
                 () => UiUpscale.Ready && Ini.Get("ui_4k", "1") != "0", v =>
                 {
                     Ini.Set("ui_4k", v ? "1" : "0");
-                    if (v && !UiUpscale.Ready) _ = BuildUi4kAsync();
+                    if (v && !UiUpscale.Ready) _ = BuildUi4kAsync(UiUpscale.Part.MenuArt);
                 });
-            _ui4kButton = SmallButton(L.T("Build"), SymbolRegular.ArrowDownload24, async (_, _) => await BuildUi4kAsync());
-            _ui4kRemove = SmallButton(L.T("Remove"), SymbolRegular.Delete24, (_, _) => RemoveUi4k());
-            var ui4kButtons = new StackPanel { Orientation = Orientation.Horizontal };
-            ui4kButtons.Children.Add(_ui4kButton);
-            ui4kButtons.Children.Add(_ui4kRemove);
-            Add(Card(SymbolRegular.Image24, L.T("4K menu textures"), null, ui4kButtons, out _ui4kHint));
+            foreach (var part in new[] { UiUpscale.Part.MenuArt, UiUpscale.Part.ItemPictures })
+            {
+                var build = SmallButton(L.T("Build"), SymbolRegular.ArrowDownload24, async (_, _) => await BuildUi4kAsync(part));
+                var remove = SmallButton(L.T("Remove"), SymbolRegular.Delete24, (_, _) => RemoveUi4k(part));
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+                buttons.Children.Add(build);
+                buttons.Children.Add(remove);
+                Add(Card(part == UiUpscale.Part.MenuArt ? SymbolRegular.Image24 : SymbolRegular.Box24,
+                    part == UiUpscale.Part.MenuArt ? L.T("HD menu art") : L.T("HD item pictures"), null, buttons, out var hint));
+                _ui4kParts[part] = (build, remove, hint);
+            }
             _ui4kBar = new ProgressBar { Height = 4, Minimum = 0, Maximum = 1, Margin = new System.Windows.Thickness(24, 0, 24, 8), Visibility = System.Windows.Visibility.Collapsed };
             Body.Children.Add(_ui4kBar);
-            Body.Children.Add(Text(L.F($"Upscaled with {UiUpscale.Credit}, downloaded once from its official release ({UiUpscale.Project}). It takes a while and uses the GPU; about 3.5 GB on disk."), "Faint"));
+            Body.Children.Add(Text(L.F($"Upscaled 2x with {UiUpscale.Credit}, downloaded once from its official release ({UiUpscale.Project}). Building uses the GPU; the menu art is enough to start with."), "Faint"));
             ShowUi4k();
 
             Group(L.T("Camera"));
@@ -146,78 +151,89 @@ namespace BloodborneLauncher.Views
         }
 
         private readonly ToggleSwitch _ui4k;
-        private readonly Wpf.Ui.Controls.Button _ui4kButton, _ui4kRemove;
-        private readonly TextBlock _ui4kHint;
+        private readonly Dictionary<UiUpscale.Part, (Wpf.Ui.Controls.Button Build, Wpf.Ui.Controls.Button Remove, TextBlock Hint)> _ui4kParts = new();
         private readonly ProgressBar _ui4kBar;
         private CancellationTokenSource? _ui4kBuild;
+        private UiUpscale.Part? _ui4kBuilding;
 
         private void ShowUi4k(string? status = null)
         {
-            var building = _ui4kBuild != null;
-            _ui4kButton.Content = building ? L.T("Cancel") : UiUpscale.Ready ? L.T("Rebuild") : L.T("Build");
-            _ui4kRemove.Visibility = !building && (UiUpscale.Ready || Directory.Exists(UiUpscale.PackDir))
-                ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-            _ui4kBar.Visibility = building ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+            _ui4kBar.Visibility = _ui4kBuild != null ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             _ui4k.IsChecked = UiUpscale.Ready && Ini.Get("ui_4k", "1") != "0";
-            SetHint(_ui4kHint, status ?? (UiUpscale.Ready
-                ? L.F($"Ready ({UiUpscale.PackBytes() / 1073741824.0:0.0} GB). Turn 4K menus off above to use the game's own")
-                : L.T("Not built yet. Build makes them from your game files")));
+            foreach (var (part, (build, remove, hint)) in _ui4kParts)
+            {
+                var building = _ui4kBuilding == part;
+                build.Content = building ? L.T("Cancel") : UiUpscale.Built(part) ? L.T("Rebuild") : L.T("Build");
+                build.IsEnabled = _ui4kBuild == null || building;
+                remove.Visibility = _ui4kBuild == null && UiUpscale.Built(part) ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+                if (building && status != null) SetHint(hint, status);
+                else if (!building)
+                    SetHint(hint, !UiUpscale.Built(part)
+                        ? part == UiUpscale.Part.MenuArt
+                            ? L.T("Menus, HUD and icons. Not built yet: about 2 minutes")
+                            : L.T("The 1056 item description pictures. Not built yet: about 7 minutes")
+                        : !UiUpscale.UpToDate(part)
+                            ? L.T("Built by an earlier version: rebuild to update it")
+                            : L.F($"Built ({UiUpscale.PackBytes(part) / 1073741824.0:0.0} GB)"));
+            }
         }
 
-        private async Task BuildUi4kAsync()
+        private async Task BuildUi4kAsync(UiUpscale.Part part)
         {
             if (_ui4kBuild is { } running)
             {
-                running.Cancel();
+                if (_ui4kBuilding == part) running.Cancel();
                 return;
             }
             if (Ws.Game.Running)
             {
-                Prompt.Tell(L.T("4K menus"), L.T("Close the game first: the upscaler needs the GPU."));
+                Prompt.Tell(L.T("HD menus"), L.T("Close the game first: the upscaler needs the GPU."));
                 return;
             }
             _ui4kBuild = new CancellationTokenSource();
+            _ui4kBuilding = part;
             ShowUi4k(L.T("Starting…"));
             var progress = new Progress<UiUpscale.Step>(step =>
             {
                 _ui4kBar.Value = step.Fraction;
-                SetHint(_ui4kHint, step.Text);
+                SetHint(_ui4kParts[part].Hint, step.Text);
             });
             try
             {
-                await UiUpscale.BuildAsync(GameEnvironment.GameDir(S), progress, _ui4kBuild.Token);
+                await UiUpscale.BuildAsync(GameEnvironment.GameDir(S), part, progress, _ui4kBuild.Token);
                 Ini.Set("ui_4k", "1");
                 Ws.SaveSoon();
-                Ws.Log(L.T("4K menus are ready: they show the next time the game starts"), LogLevel.Good);
+                Ws.Log(L.T("HD menus are ready: they show the next time the game starts"), LogLevel.Good);
             }
             catch (OperationCanceledException)
             {
-                Ws.Log(L.T("4K menus: stopped. Build again to continue where it stopped"), LogLevel.Step);
+                Ws.Log(L.T("HD menus: stopped. Build again to continue where it stopped"), LogLevel.Step);
             }
             catch (Exception e)
             {
-                Ws.Log(L.F($"4K menus: {e.Message}"), LogLevel.Warn);
-                Prompt.Tell(L.T("4K menus"), e.Message);
+                Ws.Log(L.F($"HD menus: {e.Message}"), LogLevel.Warn);
+                Prompt.Tell(L.T("HD menus"), e.Message);
             }
             finally
             {
                 _ui4kBuild.Dispose();
                 _ui4kBuild = null;
+                _ui4kBuilding = null;
                 ShowUi4k();
             }
         }
 
-        private void RemoveUi4k()
+        private void RemoveUi4k(UiUpscale.Part part)
         {
             try
             {
-                UiUpscale.Remove();
-                Ini.Set("ui_4k", "0");
+                UiUpscale.Remove(part);
+                if (!UiUpscale.Ready) Ini.Set("ui_4k", "0");
                 Ws.SaveSoon();
             }
             catch (IOException e)
             {
-                Prompt.Tell(L.T("4K menus"), e.Message);
+                Prompt.Tell(L.T("HD menus"), e.Message);
             }
             ShowUi4k();
         }

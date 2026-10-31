@@ -1,8 +1,9 @@
-Real-ESRGAN (realesrgan-ncnn-vulkan and the realesrgan-x4plus model)
+Real-ESRGAN (realesrgan-ncnn-vulkan)
 https://github.com/xinntao/Real-ESRGAN
 
 Not shipped with Lantern Engine. The launcher downloads the official release v0.2.5.0 from GitHub
-(checked by SHA-256) when a player builds the 4K menus, and runs it on that player's own game files.
+(checked by SHA-256) when a player builds the HD menus, and runs it with the 4x-NMKD-Siax model
+(licenses/4X-NMKD-SIAX.txt) on that player's own game files.
 realesrgan-ncnn-vulkan is built on ncnn by Tencent (https://github.com/Tencent/ncnn, BSD 3-Clause).
 
 BSD 3-Clause License
