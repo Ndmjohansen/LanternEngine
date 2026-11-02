@@ -170,4 +170,6 @@ float NarrowFovFactor() {
     const float a = g_aspect.load();
     return a > 0.1f && a < kGameAspect ? kGameAspect / a : 1.0f;
 }
+
+float Aspect() { return g_installed ? g_aspect.load() : 0.0f; }
 }

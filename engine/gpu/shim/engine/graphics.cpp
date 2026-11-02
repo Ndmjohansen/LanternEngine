@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "graphics.h"
+#include "widescreen.h"
 #include "engine_hooks.h"
 #include "bbport_platform.h"
 #include "bbport_settings.h"
@@ -35,6 +36,7 @@ constexpr std::uint8_t kCascadeRangeEntry[] = {
     0xc5, 0xf8, 0x29, 0x46, 0x10};
 constexpr std::uint8_t kCascadeRangeStores[] = {
     0xc5, 0xfa, 0x11, 0x46, 0x54, 0xc5, 0xf2, 0x5d, 0x42, 0x58, 0xc5, 0xfa, 0x11, 0x46, 0x58};
+constexpr std::size_t kCascadeViewWidth = 0x5c, kCascadeViewHeight = 0x60;
 constexpr float kCascadeBlend = 0.1f;
 constexpr std::size_t kDirectionalSizeTable = 0x48a9668, kDirectionalSizeDefault = 0xeac238;
 constexpr std::uint32_t kDirectionalSizes[] = {2048, 1024, 2048, 4096};
@@ -191,6 +193,17 @@ GUEST_ABI std::int64_t BeforeShadowSetup(std::uint64_t, const std::uint64_t* sav
 
 GUEST_ABI std::int64_t BeforeCascadeRangeStores(std::uint64_t, const std::uint64_t* saved) {
     const unsigned cascade = unsigned(saved[1]);
+    // The cascade fit takes its aspect from the view's integer viewport (1920x1080), not from the camera
+    // the widescreen patch widens; without this the cascades cover only the 16:9 middle of a wider screen.
+    const float aspect = Widescreen::Aspect();
+    std::int32_t width = 0, height = 0;
+    if (aspect > 0 && saved[4] && Peek(saved[4] + kCascadeViewWidth, &width) &&
+        Peek(saved[4] + kCascadeViewHeight, &height) && width > 0 && height > 0 &&
+        float(width) / float(height) < aspect - 1e-3f) {
+        const auto wide = std::int32_t(std::lround(float(height) * aspect));
+        std::memcpy(reinterpret_cast<void*>(saved[4] + kCascadeViewWidth), &wide, sizeof wide);
+    }
+    if (!g_cascade_overlap.load(std::memory_order_relaxed)) return 0;
     if (cascade == 0 || cascade > 3 || !saved[5] || !saved[3]) return 0;
     float near = 0, previous = 0, camera_near = 0;
     std::memcpy(&near, SavedXmm(saved, 0), sizeof near);
@@ -304,19 +317,21 @@ bool InstallDirectionalShadowResolution(std::uint8_t* image, std::size_t size) {
 
 bool InstallDirectionalShadows(std::uint8_t* image, std::size_t size) {
     const auto& settings = BbSettings::Get();
-    if (!settings.startup_effects[BbSettings::EffectPcss] &&
-        !settings.startup_effects[BbSettings::EffectContactShadows]) {
-        return false;
-    }
+    const bool overlap = settings.startup_effects[BbSettings::EffectPcss] ||
+                         settings.startup_effects[BbSettings::EffectContactShadows];
+    const bool wide = Widescreen::Aspect() > 0;
+    if (!overlap && !wide) return false;
     Hook hook;
     if (!image || !Matches(image, size, kCascadeRange, kCascadeRangeEntry, sizeof kCascadeRangeEntry) ||
         !Prepare(hook, image, size, kCascadeRangeTail, kCascadeRangeStores, BeforeCascadeRangeStores)) {
-        std::printf("Engine: directional overlap off: cascade code does not match 1.09 or hook unavailable\n");
+        std::printf("Engine: directional cascade hook off: cascade code does not match 1.09 or hook unavailable\n");
         return false;
     }
     Commit(std::span<Hook>{&hook, 1});
-    g_cascade_overlap.store(true, std::memory_order_relaxed);
-    std::printf("Engine: directional cascades overlap by 10%%; authored splits and atlas size retained\n");
+    g_cascade_overlap.store(overlap, std::memory_order_relaxed);
+    if (overlap)
+        std::printf("Engine: directional cascades overlap by 10%%; authored splits and atlas size retained\n");
+    if (wide) std::printf("Engine: directional cascades fitted to the screen's aspect\n");
     return true;
 }
 

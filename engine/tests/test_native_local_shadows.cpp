@@ -25,6 +25,11 @@ bool ReadProcessMemory(const void* p, void* out, size_t n) {
 }
 #endif
 
+namespace BbEngine::Widescreen {
+float g_test_aspect = 0;
+float Aspect() { return g_test_aspect; }
+}
+
 namespace {
 int failures = 0;
 void Check(bool ok, const char* what) {
@@ -299,6 +304,23 @@ int main() {
         camera[0x54 / 4] = 19;
         run(owner.data(), output.data(), camera.data(), nullptr, 1, 20, 40);
         Check(output[0x54 / 4] == 19, "overlap cannot extend behind camera near plane");
+        const auto fit = [&](float aspect) {
+            BbEngine::Widescreen::g_test_aspect = aspect;
+            const std::int32_t w = 1920, h = 1080;
+            std::memcpy(&output[0x5c / 4], &w, 4);
+            std::memcpy(&output[0x60 / 4], &h, 4);
+            run(owner.data(), output.data(), camera.data(), nullptr, 0, 0.05f, 20);
+            std::array<std::int32_t, 2> out{};
+            std::memcpy(out.data(), &output[0x5c / 4], 8);
+            return out;
+        };
+        Check(fit(0) == std::array<std::int32_t, 2>{1920, 1080}, "cascade viewport untouched without widescreen");
+        Check(fit(16.0f / 9.0f) == std::array<std::int32_t, 2>{1920, 1080}, "16:9 cascade viewport untouched");
+        Check(fit(3440.0f / 1440.0f) == std::array<std::int32_t, 2>{2580, 1080},
+              "ultrawide cascades fit the screen's width at the same height");
+        Check(fit(16.0f / 10.0f) == std::array<std::int32_t, 2>{1920, 1080},
+              "a narrower screen keeps the wider 16:9 cascade fit");
+        BbEngine::Widescreen::g_test_aspect = 0;
 #ifdef _WIN32
         DWORD ignored = 0;
         VirtualProtect(tail_page, 4096, old_protection, &ignored);
