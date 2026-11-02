@@ -200,8 +200,7 @@ GUEST_ABI std::int64_t BeforeCascadeRangeStores(std::uint64_t, const std::uint64
     if (aspect > 0 && saved[4] && Peek(saved[4] + kCascadeViewWidth, &width) &&
         Peek(saved[4] + kCascadeViewHeight, &height) && width > 0 && height > 0 &&
         float(width) / float(height) < aspect - 1e-3f) {
-        const auto wide = std::int32_t(std::lround(float(height) * aspect));
-        std::memcpy(reinterpret_cast<void*>(saved[4] + kCascadeViewWidth), &wide, sizeof wide);
+        Poke(saved[4] + kCascadeViewWidth, std::int32_t(std::lround(float(height) * aspect)));
     }
     if (!g_cascade_overlap.load(std::memory_order_relaxed)) return 0;
     if (cascade == 0 || cascade > 3 || !saved[5] || !saved[3]) return 0;
@@ -331,7 +330,7 @@ bool InstallDirectionalShadows(std::uint8_t* image, std::size_t size) {
     g_cascade_overlap.store(overlap, std::memory_order_relaxed);
     if (overlap)
         std::printf("Engine: directional cascades overlap by 10%%; authored splits and atlas size retained\n");
-    if (wide) std::printf("Engine: directional cascades fitted to the screen's aspect\n");
+    if (wide) std::printf("Engine: directional cascades widen to screens wider than 16:9\n");
     return true;
 }
 

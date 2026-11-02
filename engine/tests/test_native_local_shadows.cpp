@@ -320,6 +320,21 @@ int main() {
               "ultrawide cascades fit the screen's width at the same height");
         Check(fit(16.0f / 10.0f) == std::array<std::int32_t, 2>{1920, 1080},
               "a narrower screen keeps the wider 16:9 cascade fit");
+        std::memcpy(image.data() + tail, range_stores, sizeof range_stores);
+        Directional(false);
+        BbEngine::Widescreen::g_test_aspect = 0;
+        Check(!BbEngine::Graphics::InstallDirectionalShadows(image.data(), image.size()),
+              "no hook without widescreen or a shadow effect");
+        std::memcpy(image.data() + tail, range_stores, sizeof range_stores);
+        BbEngine::Widescreen::g_test_aspect = 16.0f / 9.0f;
+        Check(BbEngine::Graphics::InstallDirectionalShadows(image.data(), image.size()) &&
+                  BbEngine::Graphics::DirectionalShadowBlend() == 0,
+              "widescreen alone installs the hook without cascade overlap");
+        camera[0x54 / 4] = 0.05f;
+        Check(fit(3440.0f / 1440.0f) == std::array<std::int32_t, 2>{2580, 1080},
+              "widescreen alone widens the cascade fit");
+        run(owner.data(), output.data(), camera.data(), nullptr, 1, 20, 40);
+        Check(output[0x54 / 4] == 20, "widescreen alone keeps authored cascade splits");
         BbEngine::Widescreen::g_test_aspect = 0;
 #ifdef _WIN32
         DWORD ignored = 0;
