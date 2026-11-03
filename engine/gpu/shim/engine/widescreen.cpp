@@ -171,5 +171,5 @@ float NarrowFovFactor() {
     return a > 0.1f && a < kGameAspect ? kGameAspect / a : 1.0f;
 }
 
-float Aspect() { return g_installed ? g_aspect.load() : 0.0f; }
+float Aspect() { return g_installed ? g_aspect.load(std::memory_order_relaxed) : 0.0f; }
 }

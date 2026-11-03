@@ -195,12 +195,16 @@ GUEST_ABI std::int64_t BeforeCascadeRangeStores(std::uint64_t, const std::uint64
     const unsigned cascade = unsigned(saved[1]);
     // The cascade fit takes its aspect from the view's integer viewport (1920x1080), not from the camera
     // the widescreen patch widens; without this the cascades cover only the 16:9 middle of a wider screen.
+    // saved[4] (rsi) is the per-cascade stack copy 0xeac540 just filled, so plain loads are safe; Peek
+    // would cost a ReadProcessMemory syscall per field on every cascade of every frame.
     const float aspect = Widescreen::Aspect();
-    std::int32_t width = 0, height = 0;
-    if (aspect > 0 && saved[4] && Peek(saved[4] + kCascadeViewWidth, &width) &&
-        Peek(saved[4] + kCascadeViewHeight, &height) && width > 0 && height > 0 &&
-        float(width) / float(height) < aspect - 1e-3f) {
-        Poke(saved[4] + kCascadeViewWidth, std::int32_t(std::lround(float(height) * aspect)));
+    if (aspect > 0 && saved[4]) {
+        static_assert(kCascadeViewHeight == kCascadeViewWidth + 4);
+        std::int32_t view[2];
+        std::memcpy(view, reinterpret_cast<const void*>(saved[4] + kCascadeViewWidth), sizeof view);
+        const float wide = float(view[1]) * aspect;
+        if (view[0] > 0 && view[1] > 0 && float(view[0]) < wide - 1e-3f * float(view[1]))
+            Poke(saved[4] + kCascadeViewWidth, std::int32_t(std::lround(wide)));
     }
     if (!g_cascade_overlap.load(std::memory_order_relaxed)) return 0;
     if (cascade == 0 || cascade > 3 || !saved[5] || !saved[3]) return 0;
